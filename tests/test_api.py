@@ -5,6 +5,7 @@ import copy
 import random
 import pytest
 import pickle
+import time
 
 
 class TestSoupSieve(util.TestCase):
@@ -589,6 +590,92 @@ class TestInvalid(util.TestCase):
 
         with self.assertRaises(TypeError):
             sv.filter('div', "not a tag", flags=flags)
+
+    def test_excessive_selectors(self):
+        """Test excessive selectors."""
+
+        # A huge comma separated selector list ("a,a,a,...,a") used to be compiled
+        # in full, allocating a selector object per item. That is the memory
+        # exhaustion vector: the allocation grows without any limit, so a modest
+        # input string expands into hundreds of megabytes. It must be rejected.
+        count = 10000
+        selector = ",".join("a" for _ in range(count))
+
+        # Compile the selector
+        with self.assertRaises(ValueError):
+            sv.compile(selector)
+
+    def test_excessive_selectors_fail_fast(self):
+        """Test that an excessive selector list is rejected without being processed."""
+
+        # The reported proof of concept: a 500 KB selector string of 250,000
+        # items which allocated roughly 244 MB. Parsing must abort as soon as the
+        # limit is hit, so rejection is nearly instant. The time bound is
+        # deliberately generous so a slow (or Windows) CI runner cannot make this
+        # flaky, while `assertRaises` still fails loudly if the whole list is
+        # ever accepted again.
+        selector = ",".join("a" for _ in range(250000))
+
+        start = time.perf_counter()
+        with self.assertRaises(ValueError):
+            sv.compile(selector)
+        elapsed = time.perf_counter() - start
+        self.assertLess(
+            elapsed,
+            10,
+            'Rejecting an excessive selector took {} seconds'.format(elapsed)
+        )
+
+    def test_excessive_group_selectors(self):
+        """Test excessive selectors in `:is()` and `:where()`."""
+
+        # Empty slots in the forgiving pseudo-classes are not normal selector
+        # tokens, so they used to slip past the selector limit entirely while
+        # still allocating a "no match" selector each.
+        count = 10000
+        selector = ':is({})'.format("," * count)
+
+        # Compile the selector
+        with self.assertRaises(ValueError):
+            sv.compile(selector)
+
+        selector = ':where({})'.format("," * count)
+
+        # Compile the selector
+        with self.assertRaises(ValueError):
+            sv.compile(selector)
+
+    def test_excessive_custom_selectors(self):
+        """Test excessive custom selectors."""
+
+        count = 10000
+        selector = ",".join("a" for _ in range(count))
+
+        # Compile the selector
+        with self.assertRaises(ValueError):
+            sv.compile('div:--custom', custom={':--custom': selector})
+
+    def test_excessive_custom_and_normal_selectors(self):
+        """Test excessive custom and normal selectors."""
+
+        # Neither half exceeds the limit on its own, but a custom selector is
+        # expanded into the pattern that references it, so the combined size
+        # must be accounted for.
+        count = 5000
+        selector = ",".join("a" for _ in range(count))
+
+        # Compile the selector
+        with self.assertRaises(ValueError):
+            sv.compile(':is({}):--custom'.format(selector), custom={':--custom': selector})
+
+    def test_reasonable_selectors_still_compile(self):
+        """Test that selectors well under the limit are unaffected."""
+
+        count = 100
+        selector = ",".join("a" for _ in range(count))
+
+        sv.compile(selector)
+        sv.compile(':is({}):--custom'.format(selector), custom={':--custom': selector})
 
 
 class TestSyntaxErrorReporting(util.TestCase):
